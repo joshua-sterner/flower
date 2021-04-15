@@ -153,3 +153,6 @@ examples/**/dataset/**
 src/java/android/local.properties
 src/java/android/.gradle
 src/java/android/.idea
+
+# Datasets
+baselines/datasets/leaf
