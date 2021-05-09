@@ -25,7 +25,7 @@ from .typing import Parameters, Weights
 def weights_to_parameters(weights: Weights) -> Parameters:
     """Convert NumPy weights to parameters object."""
     tensors = [ndarray_to_bytes(ndarray) for ndarray in weights]
-    return Parameters(tensors=tensors, tensor_type="numpy.nda")
+    return Parameters(tensors=tensors, tensor_type="numpy.ndarray")
 
 
 def parameters_to_weights(parameters: Parameters) -> Weights:
