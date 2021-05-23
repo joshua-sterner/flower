@@ -16,25 +16,26 @@
 
 
 from logging import INFO
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from flwr.common import GRPC_MAX_MESSAGE_LENGTH
 from flwr.common.logger import log
 from flwr.server.client_manager import SimpleClientManager
-from flwr.server.grpc_server.grpc_server import start_insecure_grpc_server
+from flwr.server.network_manager import GRPCNetworkManager, NetworkManager
 from flwr.server.server import Server
 from flwr.server.strategy import FedAvg, Strategy
 
 DEFAULT_SERVER_ADDRESS = "[::]:8080"
 
 
-def start_server(
+def start_server(  # pylint: disable=too-many-arguments
     server_address: str = DEFAULT_SERVER_ADDRESS,
     server: Optional[Server] = None,
     config: Optional[Dict[str, int]] = None,
     strategy: Optional[Strategy] = None,
     grpc_max_message_length: int = GRPC_MAX_MESSAGE_LENGTH,
-    force_final_distributed_eval: bool = True
+    force_final_distributed_eval: bool = True,
+    network_managers: Optional[List[NetworkManager]] = None,
 ) -> None:
     """Start a Flower server using the gRPC transport layer.
 
@@ -66,11 +67,18 @@ def start_server(
     initialized_server, initialized_config = _init_defaults(server, config, strategy)
 
     # Start gRPC server
-    grpc_server = start_insecure_grpc_server(
-        client_manager=initialized_server.client_manager(),
-        server_address=server_address,
-        max_message_length=grpc_max_message_length,
-    )
+    if network_managers is None:
+        network_managers = [
+            GRPCNetworkManager(
+                server_address=server_address,
+                grpc_max_message_length=grpc_max_message_length,
+            )
+        ]
+
+    for net in network_managers:
+        net.set_client_manager(initialized_server.client_manager())
+        net.start()
+
     log(
         INFO,
         "Flower server running (insecure, %s rounds)",
@@ -80,8 +88,9 @@ def start_server(
     _fl(server=initialized_server, config=initialized_config,
         force_final_distributed_eval=force_final_distributed_eval)
 
-    # Stop the gRPC server
-    grpc_server.stop(grace=1)
+    # Shutdown networks
+    for net in network_managers:
+        net.stop()
 
 
 def _init_defaults(
