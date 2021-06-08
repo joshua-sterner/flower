@@ -148,3 +148,8 @@ poetry.lock
 
 # Examples
 examples/**/dataset/**
+
+# Android 
+src/java/android/local.properties
+src/java/android/.gradle
+src/java/android/.idea
