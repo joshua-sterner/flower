@@ -15,8 +15,13 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.ByteBuffer;
 import java.util.concurrent.ExecutionException;
+import java.util.Map;
+import java.util.HashMap;
 
-public class FlowerClient {
+import flwr.TFLiteClient;
+import flwr.Scalar;
+
+public class FlowerClient implements TFLiteClient {
 
     private TransferLearningModelWrapper tlModel;
     private static final int LOWER_BYTE_MASK = 0xFF;
@@ -25,31 +30,50 @@ public class FlowerClient {
     private final ConditionVariable isTraining = new ConditionVariable();
     private int local_epochs = 10;
     private static String TAG = "Flower";
+    private MainActivity activity;
 
-    public FlowerClient(Context context) {
+    public FlowerClient(MainActivity activity) {
+        this.context = activity;
+        this.activity = activity;
         this.tlModel = new TransferLearningModelWrapper(context);
-        this.context = context;
     }
-
-    public ByteBuffer[] getWeights() {
+    
+    @Override
+    public ByteBuffer[] getParameters() {
+        activity.setResultText("Handling GetParameters");
         return tlModel.getParameters();
     }
 
-    public Pair<ByteBuffer[], Integer> fit(ByteBuffer[] weights) {
-
+    @Override
+    public TFLiteClient.FitRes fit(ByteBuffer[] weights, Map<String, Scalar> config) {
+        activity.setResultText("Handling FitIns");
         tlModel.updateParameters(weights);
         isTraining.close();
         tlModel.train(this.local_epochs);
         tlModel.enableTraining((epoch, loss) -> setLastLoss(epoch, loss));
         Log.e(TAG ,  "Training enabled");
         isTraining.block();
-        return Pair.create(getWeights(), tlModel.getSize_Training());
-    }
 
-    public Pair<Pair<Float, Float>, Integer> evaluate(ByteBuffer[] weights) {
+        TFLiteClient.FitRes res = new TFLiteClient.FitRes();
+        res.parameters = getParameters();
+        res.num_examples = tlModel.getSize_Training();
+        res.metrics = null;
+        return res;
+    }
+    
+    @Override
+    public TFLiteClient.EvaluateRes evaluate(ByteBuffer[] weights, Map<String, Scalar> config) {
+        activity.setResultText("Handling EvaluateIns");
         tlModel.updateParameters(weights);
         tlModel.disableTraining();
-        return Pair.create(tlModel.calculateTestStatistics(), tlModel.getSize_Testing());
+        TFLiteClient.EvaluateRes res = new TFLiteClient.EvaluateRes();
+        res.num_examples = tlModel.getSize_Testing();
+        Pair<Float, Float> stats = tlModel.calculateTestStatistics();
+        res.loss = stats.first;
+        res.metrics = new HashMap<String, Scalar>();
+        res.metrics.put("accuracy", new Scalar(stats.second));
+        activity.setResultText("Test Accuracy after this round = " + stats.second);
+        return res;
     }
 
     public Pair<Pair<Float, Float>, Integer> getTestStatistics() {

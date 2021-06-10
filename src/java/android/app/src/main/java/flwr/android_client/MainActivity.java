@@ -25,8 +25,6 @@ import android.widget.Toast;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 
-import  flwr.android_client.FlowerServiceGrpc.FlowerServiceBlockingStub;
-import  flwr.android_client.FlowerServiceGrpc.FlowerServiceStub;
 import com.google.protobuf.ByteString;
 
 import io.grpc.stub.StreamObserver;
@@ -43,6 +41,9 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import javax.net.ssl.HttpsURLConnection;
 
+import flwr.AndroidConnection;
+import flwr.TFLiteClientWrapper;
+
 public class MainActivity extends AppCompatActivity {
     private EditText ip;
     private EditText port;
@@ -51,7 +52,7 @@ public class MainActivity extends AppCompatActivity {
     private Button trainButton;
     private TextView resultText;
     private EditText device_id;
-    private ManagedChannel channel;
+    private AndroidConnection connection;
     public FlowerClient fc;
     private static String TAG = "Flower";
 
@@ -108,7 +109,7 @@ public class MainActivity extends AppCompatActivity {
             }, 1000);
         }
     }
-
+    
     public void connect(View view) {
         String host = ip.getText().toString();
         String portStr = port.getText().toString();
@@ -117,7 +118,7 @@ public class MainActivity extends AppCompatActivity {
         }
         else {
             int port = TextUtils.isEmpty(portStr) ? 0 : Integer.valueOf(portStr);
-            channel = ManagedChannelBuilder.forAddress(host, port).maxInboundMessageSize(10 * 1024 * 1024).usePlaintext().build();
+            connection = new AndroidConnection(host, port, new TFLiteClientWrapper(fc));
             hideKeyboard(this);
             trainButton.setEnabled(true);
             connectButton.setEnabled(false);
@@ -126,160 +127,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     public void runGRCP(View view){
-        new GrpcTask(new FlowerServiceRunnable(), channel, this).execute();
+        connection.listen();
     }
 
-    private static class GrpcTask extends AsyncTask<Void, Void, String> {
-        private final GrpcRunnable grpcRunnable;
-        private final ManagedChannel channel;
-        private final MainActivity activityReference;
-
-        GrpcTask(GrpcRunnable grpcRunnable, ManagedChannel channel, MainActivity activity) {
-            this.grpcRunnable = grpcRunnable;
-            this.channel = channel;
-            this.activityReference = activity;
-        }
-
-        @Override
-        protected String doInBackground(Void... nothing) {
-            try {
-                grpcRunnable.run(FlowerServiceGrpc.newBlockingStub(channel), FlowerServiceGrpc.newStub(channel), this.activityReference);
-                return "Connection to the FL server successful \n";
-            } catch (Exception e) {
-                StringWriter sw = new StringWriter();
-                PrintWriter pw = new PrintWriter(sw);
-                e.printStackTrace(pw);
-                pw.flush();
-                return "Failed to connect to the FL server \n" + sw;
-            }
-        }
-
-        @Override
-        protected void onPostExecute(String result) {
-            MainActivity activity = activityReference;
-            if (activity == null) {
-                return;
-            }
-            activity.setResultText(result);
-            activity.trainButton.setEnabled(false);
-        }
-    }
-
-    private interface GrpcRunnable {
-        void run(FlowerServiceBlockingStub blockingStub, FlowerServiceStub asyncStub, MainActivity activity) throws Exception;
-    }
-
-    private static class FlowerServiceRunnable implements GrpcRunnable {
-        private Throwable failed;
-        private StreamObserver<ClientMessage> requestObserver;
-        @Override
-        public void run(FlowerServiceBlockingStub blockingStub, FlowerServiceStub asyncStub, MainActivity activity)
-                throws Exception {
-             join(asyncStub, activity);
-        }
-
-        private void join(FlowerServiceStub asyncStub, MainActivity activity)
-                throws InterruptedException, RuntimeException {
-
-            final CountDownLatch finishLatch = new CountDownLatch(1);
-            requestObserver = asyncStub.join(
-                            new StreamObserver<ServerMessage>() {
-                                @Override
-                                public void onNext(ServerMessage msg) {
-                                    handleMessage(msg, activity);
-                                }
-
-                                @Override
-                                public void onError(Throwable t) {
-                                    failed = t;
-                                    finishLatch.countDown();
-                                    Log.e(TAG, t.getMessage());
-                                }
-
-                                @Override
-                                public void onCompleted() {
-                                    finishLatch.countDown();
-                                    Log.e(TAG, "Done");
-                                }
-                            });
-        }
-
-        private void handleMessage(ServerMessage message, MainActivity activity) {
-
-            try {
-                ByteBuffer[] weights;
-                ClientMessage c = null;
-
-                if (message.hasGetParameters()) {
-                    Log.e(TAG, "Handling GetParameters");
-                    activity.setResultText("Handling GetParameters");
-
-//                    Pair<Pair<Float, Float>, Integer> inference = activity.fc.getTestStatistics();
-//                    float accuracy = inference.first.second;
-//                    activity.setResultText("Test Accuracy at initialization = " + accuracy);
-
-                    weights = activity.fc.getWeights();
-                    c = weightsAsProto(weights);
-                } else if (message.hasFitIns()) {
-                    Log.e(TAG, "Handling FitIns");
-                    activity.setResultText("Handling FitIns");
-
-                    List<ByteString> layers = message.getFitIns().getParameters().getTensorsList();
-                    ByteBuffer[] newWeights = new ByteBuffer[2] ;
-                    for (int i = 0; i < 2; i++) {
-                        newWeights[i] = ByteBuffer.wrap(layers.get(i).toByteArray());
-                    }
-                    Pair<ByteBuffer[], Integer> outputs = activity.fc.fit(newWeights);
-                    c = fitResAsProto(outputs.first, outputs.second);
-                } else if (message.hasEvaluateIns()) {
-                    Log.e(TAG, "Handling EvaluateIns");
-                    activity.setResultText("Handling EvaluateIns");
-
-                    List<ByteString> layers = message.getEvaluateIns().getParameters().getTensorsList();
-                    ByteBuffer[] newWeights = new ByteBuffer[2] ;
-                    for (int i = 0; i < 2; i++) {
-                        newWeights[i] = ByteBuffer.wrap(layers.get(i).toByteArray());
-                    }
-                    Pair<Pair<Float, Float>, Integer> inference = activity.fc.evaluate(newWeights);
-
-                    float loss = inference.first.first;
-                    float accuracy = inference.first.second;
-                    activity.setResultText("Test Accuracy after this round = " + accuracy);
-                    int test_size = inference.second;
-                    c = evaluateResAsProto(loss, test_size);
-                }
-                requestObserver.onNext(c);
-                activity.setResultText("Response sent to the server");
-                c = null;
-            }
-            catch (Exception e){
-                Log.e(TAG, e.getMessage());
-            }
-        }
-    }
-
-    private static ClientMessage weightsAsProto(ByteBuffer[] weights){
-        List<ByteString> layers = new ArrayList<ByteString>();
-        for (int i=0; i < weights.length; i++) {
-            layers.add(ByteString.copyFrom(weights[i]));
-        }
-        Parameters p = Parameters.newBuilder().addAllTensors(layers).setTensorType("ND").build();
-        ClientMessage.ParametersRes res = ClientMessage.ParametersRes.newBuilder().setParameters(p).build();
-        return ClientMessage.newBuilder().setParametersRes(res).build();
-    }
-
-    private static ClientMessage fitResAsProto(ByteBuffer[] weights, int training_size){
-        List<ByteString> layers = new ArrayList<ByteString>();
-        for (int i=0; i < weights.length; i++) {
-            layers.add(ByteString.copyFrom(weights[i]));
-        }
-        Parameters p = Parameters.newBuilder().addAllTensors(layers).setTensorType("ND").build();
-        ClientMessage.FitRes res = ClientMessage.FitRes.newBuilder().setParameters(p).setNumExamples(training_size).build();
-        return ClientMessage.newBuilder().setFitRes(res).build();
-    }
-
-    private static ClientMessage evaluateResAsProto(float accuracy, int testing_size){
-        ClientMessage.EvaluateRes res = ClientMessage.EvaluateRes.newBuilder().setLoss(accuracy).setNumExamples(testing_size).build();
-        return ClientMessage.newBuilder().setEvaluateRes(res).build();
-    }
 }
